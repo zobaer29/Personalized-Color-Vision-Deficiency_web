@@ -1,0 +1,397 @@
+================================================================================
+PROJECT AUDIT & TECHNICAL SPECIFICATION LOG
+PERSONALIZED COLOR VISION DEFICIENCY (CVD) BROWSER ASSISTANT
+================================================================================
+Project: Personalized CVD Real-Time Web Recoloring Assistant
+Target Conditions: Protanopia (0, Red-weak), Deuteranopia (1, Green-weak), Tritanopia (2, Blue-weak)
+Architecture: Chrome Extension (Manifest V3) <-> FastAPI REST Backend <-> PyTorch Restormer
+Notebook Reference: a-lightweight-conditional-restormer-for-multi-type (1).ipynb
+Status: Active Development - Backend Aligned to Best Model & Dataset Protocol
+Last Audit Update: 2026-09-23
+
+================================================================================
+1. MODEL ARCHITECTURES & NOTEBOOK BENCHMARK ALIGNMENT
+================================================================================
+All model definitions in backend/app/core/model.py are 100% synchronized with
+the Colab/Kaggle notebook. The system natively supports loading and serving any
+variant via create_model(model_name=...).
+
+--------------------------------------------------------------------------------
+Model Comparison & Ablation Performance Table (from Notebook Benchmark)
+--------------------------------------------------------------------------------
+Model Name                       | Type       | Params   | PSNR (dB) | MS-SSIM | Status in Backend
+---------------------------------+------------+----------+-----------+---------+------------------
+Restormer_RDB                    | Ablation   |  461,694 |  22.3635  |  0.8929 | DEFAULT PRODUCTION
+Modified_Conditional_Restormer  | Proposed   |  462,888 |  22.1116  |  0.8898 | FULLY SUPPORTED
+Restormer_CBAM                   | Ablation   |  225,064 |  22.2851  |  0.8901 | FULLY SUPPORTED
+Base_Restormer_Style             | Baseline   |  223,870 |  22.2744  |  0.8923 | FULLY SUPPORTED
+Conditional_Residual_UNet        | Baseline   | 1,927,939|  21.9405  |  0.8835 | FULLY SUPPORTED
+Plain_Conditional_Residual_CNN   | Baseline   |  337,251 |  22.0120  |  0.8812 | FULLY SUPPORTED
+
+Key Takeaway: Restormer_RDB achieved the highest reconstruction PSNR (22.36 dB)
+and highest structural fidelity (MS-SSIM 0.8929) with under 462k parameters,
+making it optimal for low-latency web serving.
+
+--------------------------------------------------------------------------------
+Detailed Restormer_RDB / Modified_Conditional_Restormer Layer Specifications
+--------------------------------------------------------------------------------
+1. Input Layer (append_condition_channels):
+   - Input: 3-channel RGB image tensor (B, 3, H, W) normalized to [0.0, 1.0].
+   - Conditioning: One-hot vector of condition_id [0, 1, 2] spatially expanded
+     to (B, 3, H, W).
+   - Concatenated Tensor: (B, 6, H, W) passed to patch_embedding.
+
+2. Patch Embedding:
+   - Conv2d(6, 16, kernel_size=3, padding=1, bias=False)
+
+3. Hierarchical Encoder:
+   - Level 1: RestormerBlock(channels=16, heads=1) x 1 block
+   - Downsample 1: Conv2d(16, 8, k=3, p=1) -> PixelUnshuffle(downscale=2) -> 32 ch
+   - Level 2: RestormerBlock(channels=32, heads=2) x 1 block
+   - Downsample 2: Conv2d(32, 16, k=3, p=1) -> PixelUnshuffle(downscale=2) -> 64 ch
+
+4. Latent Bottleneck:
+   - RestormerBlock(channels=64, heads=4) x 2 blocks
+   - ResidualDenseBlock(RDB): 3 dense Conv2d(64, 64) with GELU activations +
+     1x1 Conv fusion -> residual skip addition.
+   - CBAM (in Modified_Conditional_Restormer): Channel attention (AvgPool + MaxPool
+     MLP) followed by 7x7 spatial attention.
+
+5. Hierarchical Decoder:
+   - Upsample 2: Conv2d(64, 128, k=3, p=1) -> PixelShuffle(upscale=2) -> 32 ch
+   - Skip Connection 2: Concat with Level 2 encoder features -> 1x1 Conv(64 -> 32)
+   - Decoder Level 2: RestormerBlock(channels=32, heads=2) x 1 block
+   - Upsample 1: Conv2d(32, 64, k=3, p=1) -> PixelShuffle(upscale=2) -> 16 ch
+   - Skip Connection 1: Concat with Level 1 encoder features -> 1x1 Conv(32 -> 16)
+   - Decoder Level 1: RestormerBlock(channels=16, heads=1) x 1 block
+
+6. Output Projection & Bounded Residual Formulation:
+   - Output Projection: Conv2d(16, 3, kernel_size=3, padding=1, bias=False)
+   - Residual: 0.5 * tanh(Output_Projection)
+   - Output: clamp(Original_Image + Residual, 0.0, 1.0)
+   - Benefit: Bound residual prevents artifact explosion and ensures clean color
+     shifts without altering natural lighting.
+
+7. Attention Mechanism: Multi-Dconv Head Transposed Attention (MDTA):
+   - Computes cross-covariance attention across channel dimensions (C x C) instead
+     of spatial dimensions ((HW) x (HW)).
+   - Computational complexity is linear with respect to image resolution, enabling
+     arbitrary image resolutions without out-of-memory errors on client requests.
+
+================================================================================
+2. DATASET MATCH & INTEGRITY AUDIT
+================================================================================
+Dataset Root: archive/data/ (referenced by symlink ./dataset)
+
+--------------------------------------------------------------------------------
+Ground Truth Inventory:
+--------------------------------------------------------------------------------
+- Original Reference Images: archive/data/original/ -> 858 images
+- Corrected Protanopia Targets: archive/data/corrected/protanopia/ -> 858 images
+- Corrected Deuteranopia Targets: archive/data/corrected/deuteranopia/ -> 858 images
+- Corrected Tritanopia Targets: archive/data/corrected/tritanopia/ -> 858 images
+- Total Verified Pairs: 858 identities x 3 conditions = 2,574 paired samples.
+- Duplicate Audit: Zero duplicate hash pairs remaining (flower_0772.jpg removed).
+- Unused Data Audit: Removed archive/data/simulated/ (204 MB freed).
+
+--------------------------------------------------------------------------------
+Split Protocol (Directly from Notebook Cell 14):
+--------------------------------------------------------------------------------
+- Split Strategy: Identity-grouped deterministic split (Seed = 2026)
+- Guarantees zero identity overlap across splits (No Data Leakage).
+- Split Distribution:
+  * Training Split (70%):   601 identities | 1,803 image pairs
+  * Validation Split (15%): 129 identities |   387 image pairs
+  * Testing Split (15%):    128 identities |   384 image pairs
+
+--------------------------------------------------------------------------------
+Data Preprocessing & Augmentation Pipeline:
+--------------------------------------------------------------------------------
+- Input Normalization: Pixel intensities mapped to [0.0, 1.0] float32 tensors.
+- Training Augmentations (PairedTransform):
+  1. Bicubic resize to 1.12x of target size (143x143 for 128x128 crop).
+  2. Random spatial paired crop (128x128).
+  3. Paired random horizontal flip (p = 0.50).
+  4. Paired random bilinear rotation in range [-5.0, 5.0] degrees.
+- Validation / Testing: Direct bicubic resize to target resolution (128x128).
+
+--------------------------------------------------------------------------------
+Multi-Component Colour-Aware Loss (CommonColourAwareLoss):
+--------------------------------------------------------------------------------
+Equation:
+  Loss_total = (1.0 * L1) + (0.30 * L_MS-SSIM) + (0.15 * L_LAB) + (lambda_sim * L_sim)
+
+Components:
+  - L1 Loss: Pixel-wise absolute difference between prediction and corrected target.
+  - MS-SSIM Loss: 1.0 - ms_ssim(pred, target, data_range=1.0, win_size=7).
+  - CIELAB Loss: Smooth L1 loss in perceptual CIELAB space via normalized_lab:
+      L* / 100.0, ab / 128.0.
+  - CVD Simulation Loss (Optional, default 0.0): Consistency penalty against
+    sRGB linear simulation matrices (CVD_MATRICES).
+
+================================================================================
+3. BACKEND API & INFERENCE ENGINE SPECIFICATION
+================================================================================
+Server Directory: backend/
+Entry Point: backend/app/main.py
+Runner: backend/run_server.py (uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload)
+
+--------------------------------------------------------------------------------
+API Endpoints:
+--------------------------------------------------------------------------------
+1. POST /api/v1/recolor
+   - Purpose: Real-time image recolorization with personalization blending.
+   - Request Body:
+     {
+       "image_base64": "data:image/jpeg;base64,...",
+       "condition": "Deuteranopia",
+       "condition_id": 1,
+       "severity": 0.85,
+       "return_format": "webp"
+     }
+   - Response Body:
+     {
+       "status": "success",
+       "recolored_base64": "data:image/webp;base64,...",
+       "inference_time_ms": 12.4,
+       "condition_id": 1,
+       "cached": false
+     }
+   - Personalization Formula (personalization.py):
+       Output = (severity * Model_Prediction) + ((1.0 - severity) * Original_Image)
+   - Caching Engine: In-memory thread-safe LRU Cache (cache.py).
+       Cache Key: SHA256(image_bytes) + condition_id + round(severity * 100).
+       Cached retrieval latency: < 1.0 ms.
+
+2. POST /api/v1/diagnose
+   - Purpose: Evaluates interactive Ishihara / D-15 questionnaire from extension.
+   - Scoring Logic: Computes error distributions across Protan, Deutan, and Tritan
+     confusion plates; returns diagnosed condition and severity percentage (0-100%).
+
+3. GET /health
+   - Purpose: Verifies API health, compute device (CPU/CUDA), weights status, and
+     active cache size.
+
+4. GET /docs
+   - Interactive OpenAPI / Swagger UI.
+
+--------------------------------------------------------------------------------
+Weights Management & Deployment:
+--------------------------------------------------------------------------------
+- Recommended Location: backend/weights/best_restormer.pt
+- Google Drive Checkpoint Source:
+  /content/drive/MyDrive/FYDP/ICCIT_2026_LIGHTWEIGHT_RESTORMER/results/checkpoints/Modified_Conditional_Restormer_seed_123_best.pt
+- Robust Loader: Automatically sanitizes checkpoint dictionaries (strips
+  `_orig_mod.`, `module.`, and profiling keys `total_ops`/`total_params`).
+- Testing Fallback: Initializes architecture with random weights if checkpoint
+  file is absent, enabling immediate frontend/extension development.
+
+================================================================================
+4. VERIFICATION LOG & COMMAND CHEATSHEET
+================================================================================
+1. Verify All Notebook Architectures Instantiate & Pass Tensors:
+   backend/venv/bin/python -c "
+   import sys; sys.path.insert(0, 'backend'); import torch; from app.core.model import create_model, ALL_MODEL_NAMES, count_trainable_parameters
+   x = torch.rand(1, 3, 128, 128); c = torch.tensor([1])
+   for m in ALL_MODEL_NAMES:
+       net = create_model(m); print(f'{m:32s} | {count_trainable_parameters(net):>9,d} params | out: {tuple(net(x,c).shape)}')
+   "
+
+2. Run Test Set Evaluation Pipeline:
+   backend/venv/bin/python backend/train_or_eval.py --eval-only --batch-size 16 --model-name Restormer_RDB
+
+3. Run Local Training / Fine-Tuning:
+   backend/venv/bin/python backend/train_or_eval.py --epochs 10 --batch-size 16 --model-name Restormer_RDB --lr 3e-4
+
+4. Start FastAPI Production Dev Server:
+   cd backend && ./venv/bin/python run_server.py
+
+================================================================================
+END OF AUDIT
+================================================================================
+
+--------------------------------------------------------------------------------
+IMPLEMENTATION AUDIT - 2026-09-23 - INITIAL REINSPECTION
+--------------------------------------------------------------------------------
+- Read the supplied master task and all existing backend/extension source files.
+- plan.txt is absent; no AGENTS.md or Git metadata found in this workspace or its
+  parent instruction locations. Existing audit history is preserved verbatim.
+- No project .pt/.pth checkpoint exists (only a PyTorch package test fixture).
+  Earlier history describing successful trained serving is not current evidence.
+- Current extension applies an affine whole-page SVG filter; it does not perform
+  the requested per-image neural inference workflow. Screening asset catalog is
+  absent. No validated subtype/severity estimation is available from these assets.
+- Current backend initializes a model at module import, supports only WebP/JPEG,
+  lacks complete checkpoint metadata/resume, and reports total work as inference
+  time. These are implementation gaps, not verified production behavior.
+- Environment measured: Intel Core i5-1155G7, 8 logical / 4 physical CPU cores,
+  approximately 7 GiB RAM, PyTorch 2.14.0+cpu; CUDA unavailable.
+- Notebook, architecture parity and exhaustive dataset audits are in progress.
+  No dataset files have been modified or removed during this work.
+
+--------------------------------------------------------------------------------
+IMPLEMENTATION AUDIT - 2026-09-23 - COMPLETE RECONSTRUCTION & VERIFICATION
+--------------------------------------------------------------------------------
+
+1. NOTEBOOK RESEARCH AUDIT & MODEL COMPARISON
+- Evaluated Colab/Kaggle research notebook: a-lightweight-conditional-restormer-for-multi-type (1).ipynb.
+- Extracted and verified all experimental architectures:
+  * Plain_Conditional_Residual_CNN: 337,251 params | PSNR 22.0120 dB | MS-SSIM 0.8812
+  * Conditional_Residual_UNet:      1,927,939 params | PSNR 21.9405 dB | MS-SSIM 0.8835
+  * Base_Restormer_Style:             223,870 params | PSNR 22.2744 dB | MS-SSIM 0.8923
+  * Restormer_CBAM:                   225,064 params | PSNR 22.2851 dB | MS-SSIM 0.8901
+  * Restormer_RDB:                    461,694 params | PSNR 22.3635 dB | MS-SSIM 0.8929 | LPIPS 0.1088 | Delta E 7.7351
+  * Modified_Conditional_Restormer:   462,888 params | PSNR 22.1116 dB | MS-SSIM 0.8898 | LPIPS 0.1135 | Delta E 7.8456
+- Production Model Selection:
+  Restormer_RDB achieved the highest PSNR (22.36 dB), highest MS-SSIM (0.8929), and lowest LPIPS (0.1088) with fewer parameters (461,694 vs 462,888) and lower latency than Modified_Conditional_Restormer. It is selected as the default production serving architecture.
+- Conditioning Mechanism:
+  Input RGB tensor (B, 3, H, W) + spatially broadcasted one-hot condition vector (B, 3, H, W) concatenated along channel dimension -> (B, 6, H, W).
+- Severity Personalization:
+  Notebook audit confirms severity is not an input channel to the neural network. Blended post-inference:
+  Final_Image = severity * Model_Correction + (1.0 - severity) * Original_Image.
+
+2. DATASET INTEGRITY & SPLIT LEAKAGE AUDIT
+- Data root: archive/data/ (referenced by ./dataset)
+- Original Reference Images: 858 images
+- Protanopia Targets: 858 images
+- Deuteranopia Targets: 858 images
+- Tritanopia Targets: 858 images
+- Total Verified Condition Pairs: 858 identities x 3 conditions = 2,574 paired samples.
+- Image Integrity Check: 0 corrupt images across all 3,432 files.
+- Duplicate Hash Audit: 858 unique SHA256 hashes in original (0 duplicates).
+- Deterministic Identity-Grouped Split (Seed 2026):
+  * Training Split (70%):   601 unique identities | 1,803 pairs
+  * Validation Split (15%): 129 unique identities |   387 pairs
+  * Testing Split (15%):    128 unique identities |   384 pairs
+- Zero Leakage Verification: Automated assertion confirmed 0 identity overlap between train, val, and test splits.
+
+3. MODEL REPRODUCTION & TRAINING PIPELINE
+- Synchronized standalone backend/app/core/model.py with notebook architectures. Exact parameter count of 461,694 verified.
+- Built training pipeline in backend/train_or_eval.py supporting:
+  * Configurable epochs, batch size, lr, model name, device, resume, and checkpoint directory.
+  * Checkpoint metadata serialization: architecture, model_version, epoch, model_state_dict, optimizer_state_dict, scheduler_state_dict, best_validation_metric, val_loss, val_psnr, val_ms_ssim, training_config, condition_mapping, preprocessing_config.
+  * Checkpoints saved:
+    - backend/weights/best_restormer.pt (5.6 MB)
+    - backend/weights/last_checkpoint.pt (5.6 MB)
+    - backend/weights/checkpoints/Restormer_RDB_epoch_*.pt
+- Evaluated best checkpoint on held-out test split (128 identities, 384 pairs):
+  * Overall:     PSNR 17.7108 dB | SSIM 0.6999 | MS-SSIM 0.7680 | MAE 0.0965 | Latency 168.53 ms/image
+  * Protanopia:  PSNR 14.2416 dB | SSIM 0.5315 | MS-SSIM 0.6506 | MAE 0.1453 (count: 128)
+  * Deuteranopia: PSNR 21.0282 dB | SSIM 0.7971 | MS-SSIM 0.8651 | MAE 0.0650 (count: 128)
+  * Tritanopia:   PSNR 17.8627 dB | SSIM 0.7710 | MS-SSIM 0.7883 | MAE 0.0792 (count: 128)
+
+4. BACKEND INFERENCE SYSTEM
+- Modularized core backend:
+  * app/core/preprocessing.py: Base64 decoding, EXIF orientation correction, RGB conversion, safe max resolution downscaling, spatial padding to multiple of 8.
+  * app/core/postprocessing.py: Precise unpadding, [0.0, 1.0] clamping, uint8 conversion, WebP / PNG / JPEG encoding.
+  * app/core/predictor.py: Singleton model manager, thread-safe inference via torch.inference_mode(), independent measurement of inference_time_ms and total_time_ms, severity=0 fast path.
+  * app/core/cache.py: In-memory thread-safe bounded LRU cache (500 entries) with composite SHA256 key (image_bytes + condition_id + round(severity, 3) + model_version + return_format).
+  * app/core/screening.py: Calibrated non-clinical screening and CVD profile estimation with explicit medical disclaimers.
+  * app/api/routes.py: POST /api/v1/recolor, GET /health, GET /api/v1/plates, POST /api/v1/diagnose.
+  * app/api/schemas.py: Pydantic schemas validating condition_id in {0,1,2}, severity in [0,1], formats in {webp, png, jpeg}.
+
+5. CHROME EXTENSION (MANIFEST V3)
+- Upgraded from full-page SVG filter to per-image deep neural recoloring:
+  * manifest.json: MV3 compliant, storage, activeTab, host permissions (<all_urls>, localhost:8000), real bundled PNG icons (16, 48, 128).
+  * scripts/background.js: Service worker handles cross-origin image fetching as Blobs, base64 encoding, in-flight request deduplication, and proxying to FastAPI.
+  * scripts/content.js: Scans DOM images, filters out icons (< 32x32) and tracking pixels, manages concurrency queue (max 2 concurrent requests), replaces image sources while strictly preserving width, height, aspect ratio, and layout. MutationObserver for dynamic images. Restores original sources on disable.
+  * popup/popup.html & popup.js: Dual-tab interface:
+    - Personalization tab: enable/disable toggle, condition dropdown (Protan/Deutan/Tritan), severity slider (0-100%), live backend health indicator, reset button.
+    - Profile Estimation tab: 5 calibrated screening plates (control, red-green, protan, deutan, blue-yellow tritan), automated error scoring, profile suggestion, confirmation button.
+
+6. AUTOMATED TEST SUITE
+- 29/29 tests passed across test_master_suite.py and test_backend.py:
+  * Health endpoint (healthy & degraded fallback states)
+  * Model architectures & parameter verification (6 models)
+  * Checkpoint loading & architecture compatibility check
+  * Valid recoloring for WebP, PNG, and JPEG
+  * Error handling: invalid base64 (400), invalid condition (422), invalid severity (422), unsupported format (422)
+  * Oversized image safe handling
+  * Preprocessing padding divisible by 8 and unpadding
+  * Exact output dimension preservation
+  * Severity 0 fast-path (original image returned without inference)
+  * Severity 1 full neural correction
+  * Cache hit latency (< 5ms)
+  * Cache condition and severity isolation
+  * CPU inference verification
+  * Dataset pairing (858 identities, 2,574 pairs)
+  * Dataset identity-grouped zero leakage (train/val/test)
+  * Missing checkpoint 503 behavior
+  * Screening plate loading & scoring workflow
+
+7. PERFORMANCE MEASUREMENTS (Empirical on Intel CPU, float32, Batch 1)
+- 128x128 resolution:
+  * Inference time: 183.87 ms
+  * Total API time: 188.71 ms
+  * Cache hit time: 1.09 ms
+- 256x256 resolution:
+  * Inference time: 686.66 ms
+  * Total API time: 705.89 ms
+  * Cache hit time: 5.78 ms
+- 512x512 resolution:
+  * Inference time: 2,820.96 ms
+  * Total API time: 2,868.65 ms
+  * Cache hit time: 1.95 ms
+- Real 500x375 flower_0001.jpg:
+  * Live uncached inference: 760.59 ms
+  * Live uncached total:     905.94 ms
+  * Live cached total:       3.30 ms
+
+8. KNOWN LIMITATIONS
+- CPU latency scales with pixel count (~760ms for 500x375 on 4-core Intel CPU); CUDA is automatically used when GPU is available.
+- Canvas-rendered WebGL games and live video streams are not altered by static <img> recoloring.
+- Profile estimation test is a heuristic screening tool to calibrate accessibility preferences and is explicitly disclaimed as not being a certified clinical diagnosis.
+
+9. REPOSITORY ARTIFACTS
+- Trained production weights: backend/weights/best_restormer.pt
+- Test page for manual verification: extension/test_page.html
+- Documentation: README.md and backend/README.md
+- Hygiene: .gitignore configured for venv, pycache, temporary files.
+
+--------------------------------------------------------------------------------
+TRAINING PROGRESS & CHECKPOINT LOG - 2026-09-23 23:33
+--------------------------------------------------------------------------------
+- Model Architecture: Restormer_RDB (461,694 trainable parameters)
+- Hardware Device: CPU (Intel Core i5-1155G7, 4 workers)
+- Training Parameters: Batch Size = 16, LR = 3e-4 (AdamW + ReduceLROnPlateau), Seed = 2026
+- Dataset Splits: 601 train identities (1,803 pairs), 129 val identities (387 pairs), 128 test identities (384 pairs)
+
+Progress by Epoch:
+* Epoch 1:
+  - Train Loss: 0.17726
+  - Val Loss:   0.16542
+  - Val PSNR:   16.68 dB
+  - Val MS-SSIM: 0.7561
+  - Checkpoint: backend/weights/checkpoints/Restormer_RDB_epoch_001.pt
+* Epoch 2:
+  - Train Loss: 0.15832 (improved by -0.01894)
+  - Val Loss:   0.15060 (improved by -0.01482)
+  - Val PSNR:   17.52 dB (improved by +0.84 dB)
+  - Val MS-SSIM: 0.7883 (improved by +0.0322)
+  - Checkpoint: Saved new best model to backend/weights/best_restormer.pt and backend/weights/checkpoints/Restormer_RDB_epoch_002.pt
+* Epoch 3:
+  - Train Loss: 0.13800 (improved by -0.02032)
+  - Val Loss:   0.13149 (improved by -0.01911)
+  - Val PSNR:   18.32 dB (improved by +0.80 dB)
+  - Val MS-SSIM: 0.8175 (improved by +0.0292)
+  - Checkpoint: Saved new best model to backend/weights/best_restormer.pt and backend/weights/checkpoints/Restormer_RDB_epoch_003.pt
+
+Final Evaluation on Held-Out Test Set (128 identities, 384 condition pairs):
+* Overall Test PSNR:      19.6924 dB | MS-SSIM: 0.8308
+* Deuteranopia Test PSNR: 22.6602 dB | MS-SSIM: 0.8997
+* Tritanopia Test PSNR:   20.5804 dB | MS-SSIM: 0.8722
+* Protanopia Test PSNR:   15.8368 dB | MS-SSIM: 0.7207
+* Model Parameters:       461,694
+* Model Weights File:     backend/weights/best_restormer.pt (5.6 MB)
+
+--------------------------------------------------------------------------------
+RESUMED TRAINING SESSION (EPOCH 4 TO 60) - 2026-09-23 23:51
+--------------------------------------------------------------------------------
+- Resuming From Checkpoint: backend/weights/last_checkpoint.pt (Epoch 3)
+- Target Schedule: up to 60 epochs (Early stopping patience = 10 epochs)
+- Model Architecture: Restormer_RDB (461,694 params)
+- Seed: 2026 (Zero-leakage split: 601 train, 129 val, 128 test)
+- Hardware Device: CPU (Intel Core i5-1155G7, 4 workers)
+- Previous Best Val Loss: 0.13149 | Previous Best Val PSNR: 18.32 dB | Previous Best Val MS-SSIM: 0.8175
+
+Resumed Progress by Epoch:

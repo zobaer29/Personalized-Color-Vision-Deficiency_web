@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Personalized CVD Assistant</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div class="title-area">
+        <h1>CVD Assistant</h1>
+        <span class="version-tag">Restormer RDB</span>
+      </div>
+      <div class="toggle-wrapper">
+        <label class="switch" for="enableToggle">
+          <input type="checkbox" id="enableToggle">
+          <span class="slider round"></span>
+        </label>
+        <span id="toggleStatusLabel" class="status-label">OFF</span>
+      </div>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab-btn active" id="tabDashboard" role="tab">Personalization</button>
+      <button class="tab-btn" id="tabDiagnosis" role="tab">Profile Estimation</button>
+    </nav>
+
+    <!-- SETTINGS / DASHBOARD VIEW -->
+    <main id="viewDashboard" class="view active-view">
+      <section class="section">
+        <label for="conditionSelect" class="section-title">Color Vision Profile</label>
+        <select id="conditionSelect" class="select-box">
+          <option value="0">Protanopia (Red-weak)</option>
+          <option value="1" selected>Deuteranopia (Green-weak)</option>
+          <option value="2">Tritanopia (Blue-weak)</option>
+        </select>
+        <div id="detectedBadge" class="detected-badge hidden">Estimated from test</div>
+      </section>
+
+      <section class="section">
+        <div class="slider-header">
+          <label for="severitySlider" class="section-title">Personalization Severity</label>
+          <span id="severityValue" class="slider-val">85%</span>
+        </div>
+        <input type="range" id="severitySlider" min="0" max="100" value="85" class="range-slider">
+        <div class="slider-labels">
+          <span>0% (Original)</span>
+          <span>50%</span>
+          <span>100% (Full)</span>
+        </div>
+      </section>
+
+      <section class="section">
+        <label class="section-title">Recoloring Scope</label>
+        <div class="scope-group">
+          <label class="scope-card" id="scopeCardFull">
+            <input type="radio" name="recolorScope" value="full_page" id="scopeFullPage" checked>
+            <div class="scope-text">
+              <span class="scope-title">Full Website (Recommended)</span>
+              <span class="scope-desc">Recolors background, text, UI elements & palettes</span>
+            </div>
+          </label>
+          <label class="scope-card" id="scopeCardImages">
+            <input type="radio" name="recolorScope" value="images_only" id="scopeImagesOnly">
+            <div class="scope-text">
+              <span class="scope-title">Photos Only</span>
+              <span class="scope-desc">Neural model recolors only &lt;img&gt; photos</span>
+            </div>
+          </label>
+        </div>
+      </section>
+
+      <section class="section api-status-section">
+        <div class="api-status-row">
+          <span class="indicator" id="apiIndicator"></span>
+          <span id="apiStatusText">Checking FastAPI backend...</span>
+        </div>
+        <div class="btn-group">
+          <button id="applyNowBtn" class="primary-btn">Save & Apply to Page</button>
+          <button id="resetProfileBtn" class="secondary-btn">Reset Defaults</button>
+        </div>
+      </section>
+    </main>
+
+    <!-- DIAGNOSTIC / SCREENING TEST VIEW -->
+    <main id="viewDiagnosis" class="view">
+      <div class="notice-banner">
+        <p id="screeningNotice">Non-clinical screening to calibrate browser personalization. Not a medical diagnosis.</p>
+      </div>
+
+      <div class="test-controls">
+        <button id="retryTestBtn" class="primary-btn">Start Calibration Test</button>
+      </div>
+
+      <div id="testContainer" class="hidden">
+        <div class="test-progress-bar">
+          <div id="testProgress" class="progress-fill"></div>
+        </div>
+
+        <div id="plateWrapper" class="plate-box">
+          <div id="plateQuestion" class="plate-question">Plate 1 of 5</div>
+          <div id="plateVisual" class="plate-visual">
+            <div id="plateGraphic" class="plate-graphic"></div>
+          </div>
+          <div id="platePrompt" class="plate-prompt">What numeral do you perceive in the plate?</div>
+          <div id="plateOptions" class="options-grid"></div>
+        </div>
+      </div>
+
+      <div id="testResultWrapper" class="result-box hidden">
+        <h3 id="diagnosisTitle">Calibration Complete</h3>
+        <p id="diagnosisDetail" class="diagnosis-detail"></p>
+        <div class="btn-group">
+          <button id="applyDiagnosisBtn" class="primary-btn">Apply Estimated Profile</button>
+          <button id="discardDiagnosisBtn" class="secondary-btn">Dismiss</button>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <span>Restormer_RDB inference via local FastAPI server (localhost:8000). Non-destructive per-image recoloring.</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

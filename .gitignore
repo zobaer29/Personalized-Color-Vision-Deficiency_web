@@ -1,0 +1,27 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+backend/venv/
+venv/
+env/
+.env
+
+# PyTorch / training temporary files
+*.tmp
+*.log
+.pytest_cache/
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*~
+
+# Datasets & local scratch files
+archive/
+dataset
+test.txt

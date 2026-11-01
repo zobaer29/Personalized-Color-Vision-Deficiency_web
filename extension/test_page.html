@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>CVD Assistant Integration Test Page</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      background: #0f1117;
+      color: #e6edf3;
+      padding: 30px;
+      line-height: 1.6;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 20px;
+      margin-top: 20px;
+    }
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .card h3 {
+      font-size: 14px;
+      margin-bottom: 10px;
+      color: #58a6ff;
+    }
+    img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 4px;
+      display: block;
+    }
+    .icon-small {
+      width: 16px;
+      height: 16px;
+    }
+    button {
+      background: #238636;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 600;
+      margin-top: 15px;
+    }
+    button:hover { background: #2ea043; }
+  </style>
+</head>
+<body>
+  <h1>Personalized CVD Browser Assistant Test Page</h1>
+  <p>This page tests per-image neural recoloring, icon skipping, layout preservation, and dynamic image insertion.</p>
+
+  <button id="addDynamicBtn">Add Dynamic Image</button>
+
+  <div class="grid" id="imageGrid">
+    <div class="card">
+      <h3>Eligible Photo 1 (Red & Green Florals)</h3>
+      <img id="imgFloral" src="../archive/data/original/flower_0001.jpg" alt="Flower 0001" width="300" height="225">
+    </div>
+    <div class="card">
+      <h3>Eligible Photo 2 (Outdoor Scenery)</h3>
+      <img id="imgScene" src="../archive/data/original/flower_0002.jpg" alt="Flower 0002" width="300" height="225">
+    </div>
+    <div class="card">
+      <h3>Tiny Icon (Should be SKIPPED)</h3>
+      <img id="iconSmall" class="icon-small" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" alt="Tiny pixel" width="16" height="16">
+      <p style="font-size: 11px; color: #8b949e; margin-top: 8px;">Icons &lt; 32px must not trigger model inference.</p>
+    </div>
+  </div>
+
+  <script>
+    document.getElementById("addDynamicBtn").addEventListener("click", () => {
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `
+        <h3>Dynamically Added Image</h3>
+        <img id="dynImg" src="../archive/data/original/flower_0045.jpg" alt="Dynamic Flower" width="300" height="225">
+      `;
+      document.getElementById("imageGrid").appendChild(card);
+    });
+  </script>
+</body>
+</html>
